@@ -1,17 +1,42 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { format, subDays } from 'date-fns';
-import { User, CheckCircle, XCircle, Clock, CalendarDays, History } from 'lucide-react';
+import { User, CheckCircle, XCircle, Clock, CalendarDays, History, Building2, Filter, Users } from 'lucide-react';
 
-type Employee = { id: string; name: string; permissionHours?: number };
-type AttendanceRecord = { employeeId: string; date: string; status: 'Present' | 'Absent'; permissionHours?: number };
+type Department = {
+  id: string;
+  name: string;
+};
+
+type Employee = {
+  id: string;
+  name: string;
+  permissionHours?: number;
+  departmentId?: string | null;
+  department?: Department | null;
+};
+
+type AttendanceRecord = {
+  employeeId: string;
+  date: string;
+  status: 'Present' | 'Absent';
+  permissionHours?: number;
+};
+
+type DepartmentGroup = {
+  id: string;
+  name: string;
+  employees: Employee[];
+};
 
 export default function AttendancePage() {
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [todayDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [date, setDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState<string>('all');
   const [loading, setLoading] = useState(true);
 
   // Track modified attendance statuses and permission hours locally
@@ -25,15 +50,18 @@ export default function AttendancePage() {
   const fetchData = async (currentDate: string) => {
     setLoading(true);
     try {
-      const [empRes, attRes] = await Promise.all([
+      const [deptRes, empRes, attRes] = await Promise.all([
+        fetch('/api/departments', { cache: 'no-store' }),
         fetch('/api/employees', { cache: 'no-store' }),
         fetch(`/api/attendance?date=${currentDate}`, { cache: 'no-store' }),
       ]);
+      const deptData = await deptRes.json();
       const empData = await empRes.json();
       const attData = await attRes.json();
 
-      setEmployees(empData);
-      setAttendanceRecords(attData);
+      if (Array.isArray(deptData)) setDepartments(deptData);
+      if (Array.isArray(empData)) setEmployees(empData);
+      if (Array.isArray(attData)) setAttendanceRecords(attData);
     } catch (error) {
       console.error('Failed to fetch data', error);
     } finally {
@@ -90,19 +118,16 @@ export default function AttendancePage() {
   const confirmSubmit = async () => {
     setIsSubmitting(true);
     try {
-      // Collect all affected employee IDs (either status changed or permission changed)
       const affectedEmployeeIds = Array.from(
         new Set([...Object.keys(localChanges), ...Object.keys(permissionChanges)])
       );
 
-      // Save to database
       const promises = affectedEmployeeIds.map((employeeId) => {
         const currentStatus = getStatus(employeeId) || 'Present';
         const currentPermHours = getPermissionHours(
           employees.find((e) => e.id === employeeId) || { id: employeeId, name: '' }
         );
 
-        // 1. Upsert attendance record in database with status and date permission hours
         const attPromise = fetch('/api/attendance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -114,7 +139,6 @@ export default function AttendancePage() {
           }),
         });
 
-        // 2. Also update employee permission hours master in database
         const emp = employees.find((e) => e.id === employeeId);
         const empPromise = fetch(`/api/employees/${employeeId}`, {
           method: 'PUT',
@@ -141,6 +165,51 @@ export default function AttendancePage() {
     }
   };
 
+  // Group employees department-wise
+  const departmentGroups: DepartmentGroup[] = useMemo(() => {
+    const groups: Map<string, DepartmentGroup> = new Map();
+
+    // Initialize all departments from the database
+    departments.forEach((dept) => {
+      groups.set(dept.id, {
+        id: dept.id,
+        name: dept.name,
+        employees: [],
+      });
+    });
+
+    // Populate employees into their respective departments
+    employees.forEach((emp) => {
+      const deptId = emp.departmentId || emp.department?.id;
+      if (deptId && groups.has(deptId)) {
+        groups.get(deptId)!.employees.push(emp);
+      } else {
+        // Group under Unassigned if employee has no department or department not found
+        if (!groups.has('unassigned')) {
+          groups.set('unassigned', {
+            id: 'unassigned',
+            name: 'Unassigned / General',
+            employees: [],
+          });
+        }
+        groups.get('unassigned')!.employees.push(emp);
+      }
+    });
+
+    // Filter out unassigned group if empty
+    return Array.from(groups.values()).filter(
+      (group) => group.employees.length > 0 || group.id !== 'unassigned'
+    );
+  }, [departments, employees]);
+
+  // Filter department groups based on selected department dropdown
+  const filteredGroups = useMemo(() => {
+    if (selectedDepartmentId === 'all') {
+      return departmentGroups;
+    }
+    return departmentGroups.filter((g) => g.id === selectedDepartmentId);
+  }, [departmentGroups, selectedDepartmentId]);
+
   if (!mounted) {
     return <div className="p-6 text-center text-gray-500">Loading...</div>;
   }
@@ -153,7 +222,7 @@ export default function AttendancePage() {
       <h2 className="text-2xl font-bold text-gray-800 mb-6">Attendance Management</h2>
 
       {/* Date Picker & Preset Buttons for Previous Dates */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mb-8 w-full max-w-3xl">
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mb-8 w-full max-w-4xl">
         <label className="block text-sm font-medium text-gray-700 mb-2">Select Date to Edit / Mark Attendance</label>
         <div className="flex flex-wrap items-center gap-4">
           <input
@@ -196,105 +265,188 @@ export default function AttendancePage() {
         </div>
       </div>
 
-      {/* Attendance & Permission List */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden w-full max-w-4xl">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+      {/* Main Header & Department Filter Bar */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden w-full max-w-4xl mb-6">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex flex-wrap justify-between items-center gap-4">
           <div className="flex items-center">
             <CalendarDays className="w-5 h-5 text-blue-600 mr-2" />
             <h3 className="font-semibold text-gray-700">
-              Attendance List for <span className="text-blue-700 font-bold">{date}</span>
+              Department Attendance List for <span className="text-blue-700 font-bold">{date}</span>
             </h3>
           </div>
-          {date !== todayDate && (
-            <span className="text-xs bg-amber-100 text-amber-800 px-2.5 py-1 rounded-full font-medium border border-amber-200">
-              Editing Previous Date
-            </span>
-          )}
-        </div>
 
-        {loading ? (
-          <div className="p-6 text-center text-gray-500">Loading attendance data...</div>
-        ) : employees.length === 0 ? (
-          <div className="p-6 text-center text-gray-500">No employees found. Please add employees first.</div>
-        ) : (
-          <div>
-            <ul className="divide-y divide-gray-200">
-              {employees.map((emp) => {
-                const status = getStatus(emp.id);
-                return (
-                  <li key={emp.id} className="p-4 flex flex-wrap items-center justify-between gap-4 hover:bg-gray-50">
-                    <div className="flex items-center min-w-[180px]">
-                      <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 mr-4 shrink-0">
-                        <User className="w-5 h-5" />
-                      </div>
-                      <p className="font-medium text-gray-900">{emp.name}</p>
-                    </div>
+          <div className="flex items-center gap-3">
+            {date !== todayDate && (
+              <span className="text-xs bg-amber-100 text-amber-800 px-2.5 py-1 rounded-full font-medium border border-amber-200">
+                Editing Previous Date
+              </span>
+            )}
 
-                    {/* Attendance Marking & Permission Field Section */}
-                    <div className="flex flex-wrap items-center gap-3">
-                      {/* Permission Hours Field */}
-                      <div className="flex items-center bg-amber-50/80 border border-amber-200 px-3 py-1.5 rounded-md">
-                        <Clock className="w-4 h-4 text-amber-600 mr-1.5 shrink-0" />
-                        <label className="text-xs font-semibold text-amber-900 mr-1.5 shrink-0">Permission:</label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min="0"
-                          value={getPermissionHours(emp)}
-                          onChange={(e) => handlePermissionChange(emp.id, Number(e.target.value))}
-                          className="w-16 rounded border border-amber-300 px-2 py-0.5 text-sm text-amber-900 font-medium focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
-                          placeholder="0"
-                        />
-                        <span className="text-xs text-amber-700 ml-1 font-medium">hrs</span>
-                      </div>
-
-                      {/* Attendance Status Marking Buttons */}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => markAttendance(emp.id, 'Present')}
-                          className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                            status === 'Present'
-                              ? 'bg-green-100 text-green-700 border border-green-300 shadow-sm font-semibold'
-                              : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
-                          }`}
-                        >
-                          <CheckCircle
-                            className={`w-4 h-4 mr-1.5 ${status === 'Present' ? 'text-green-600' : 'text-gray-400'}`}
-                          />
-                          Present
-                        </button>
-                        <button
-                          onClick={() => markAttendance(emp.id, 'Absent')}
-                          className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                            status === 'Absent'
-                              ? 'bg-red-100 text-red-700 border border-red-300 shadow-sm font-semibold'
-                              : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
-                          }`}
-                        >
-                          <XCircle
-                            className={`w-4 h-4 mr-1.5 ${status === 'Absent' ? 'text-red-600' : 'text-gray-400'}`}
-                          />
-                          Absent
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-
-            <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-              <button
-                onClick={handleSubmit}
-                disabled={!hasPendingChanges}
-                className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+            {/* Department Filter Dropdown */}
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-gray-500" />
+              <select
+                value={selectedDepartmentId}
+                onChange={(e) => setSelectedDepartmentId(e.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-800 font-medium focus:border-blue-500 focus:outline-none bg-white shadow-xs"
               >
-                Save Attendance ({date})
-              </button>
+                <option value="all">All Departments ({employees.length} employees)</option>
+                {departmentGroups.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.name} ({group.employees.length})
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
-        )}
+        </div>
       </div>
+
+      {/* Loading state */}
+      {loading ? (
+        <div className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 text-center text-gray-500 w-full max-w-4xl">
+          Loading attendance data department-wise...
+        </div>
+      ) : employees.length === 0 ? (
+        <div className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 text-center text-gray-500 w-full max-w-4xl">
+          No employees found. Please add employees first.
+        </div>
+      ) : filteredGroups.length === 0 ? (
+        <div className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 text-center text-gray-500 w-full max-w-4xl">
+          No employees found in the selected department.
+        </div>
+      ) : (
+        <div className="space-y-6 w-full max-w-4xl">
+          {/* Render Employees Grouped Department-Wise */}
+          {filteredGroups.map((group) => {
+            const presentCount = group.employees.filter((emp) => getStatus(emp.id) === 'Present').length;
+            const absentCount = group.employees.filter((emp) => getStatus(emp.id) === 'Absent').length;
+
+            return (
+              <div key={group.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                {/* Department Section Header */}
+                <div className="px-6 py-4 bg-slate-50 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-lg bg-blue-100 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0">
+                      <Building2 className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-gray-900 text-base">{group.name}</h4>
+                      <p className="text-xs text-gray-500 flex items-center">
+                        <Users className="w-3.5 h-3.5 mr-1" />
+                        {group.employees.length} {group.employees.length === 1 ? 'Employee' : 'Employees'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Attendance Summary Pill Badges for this Department */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-green-50 border border-green-200 text-green-700">
+                      {presentCount} Present
+                    </span>
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-red-50 border border-red-200 text-red-700">
+                      {absentCount} Absent
+                    </span>
+                  </div>
+                </div>
+
+                {/* Employee Attendance List for this Department */}
+                {group.employees.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-gray-400 italic">
+                    No employees assigned to this department.
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-gray-200">
+                    {group.employees.map((emp) => {
+                      const status = getStatus(emp.id);
+                      return (
+                        <li key={emp.id} className="p-4 flex flex-wrap items-center justify-between gap-4 hover:bg-gray-50/70 transition-colors">
+                          <div className="flex items-center min-w-[180px]">
+                            <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 mr-4 shrink-0">
+                              <User className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <p className="font-medium text-gray-900">{emp.name}</p>
+                              <span className="text-xs text-gray-500 font-medium">{group.name}</span>
+                            </div>
+                          </div>
+
+                          {/* Attendance Marking & Permission Field Section */}
+                          <div className="flex flex-wrap items-center gap-3">
+                            {/* Permission Hours Field */}
+                            <div className="flex items-center bg-amber-50/80 border border-amber-200 px-3 py-1.5 rounded-md">
+                              <Clock className="w-4 h-4 text-amber-600 mr-1.5 shrink-0" />
+                              <label className="text-xs font-semibold text-amber-900 mr-1.5 shrink-0">Permission:</label>
+                              <input
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                value={getPermissionHours(emp)}
+                                onChange={(e) => handlePermissionChange(emp.id, Number(e.target.value))}
+                                className="w-16 rounded border border-amber-300 px-2 py-0.5 text-sm text-amber-900 font-medium focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
+                                placeholder="0"
+                              />
+                              <span className="text-xs text-amber-700 ml-1 font-medium">hrs</span>
+                            </div>
+
+                            {/* Attendance Status Marking Buttons */}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => markAttendance(emp.id, 'Present')}
+                                className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                                  status === 'Present'
+                                    ? 'bg-green-100 text-green-700 border border-green-300 shadow-xs font-semibold'
+                                    : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
+                                }`}
+                              >
+                                <CheckCircle
+                                  className={`w-4 h-4 mr-1.5 ${status === 'Present' ? 'text-green-600' : 'text-gray-400'}`}
+                                />
+                                Present
+                              </button>
+                              <button
+                                onClick={() => markAttendance(emp.id, 'Absent')}
+                                className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                                  status === 'Absent'
+                                    ? 'bg-red-100 text-red-700 border border-red-300 shadow-xs font-semibold'
+                                    : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
+                                }`}
+                              >
+                                <XCircle
+                                  className={`w-4 h-4 mr-1.5 ${status === 'Absent' ? 'text-red-600' : 'text-gray-400'}`}
+                                />
+                                Absent
+                              </button>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Save Attendance Button Footer Card */}
+          <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex justify-between items-center">
+            <span className="text-xs text-gray-500">
+              {hasPendingChanges ? (
+                <span className="text-amber-600 font-medium">You have unsaved changes!</span>
+              ) : (
+                'All changes saved for ' + date
+              )}
+            </span>
+            <button
+              onClick={handleSubmit}
+              disabled={!hasPendingChanges}
+              className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+            >
+              Save Attendance ({date})
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Confirmation Modal */}
       {showConfirm && (
@@ -326,3 +478,4 @@ export default function AttendancePage() {
     </div>
   );
 }
+
