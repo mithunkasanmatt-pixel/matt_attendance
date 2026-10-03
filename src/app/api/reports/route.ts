@@ -8,20 +8,32 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const departmentId = searchParams.get('departmentId');
-    const month = searchParams.get('month'); // Expected format: YYYY-MM
+    const month = searchParams.get('month');
+    const fromDateParam = searchParams.get('fromDate');
+    const toDateParam = searchParams.get('toDate');
 
-    if (!month) {
-      return NextResponse.json({ error: 'month parameter (YYYY-MM) is required' }, { status: 400 });
+    let startDate: string;
+    let endDate: string;
+    let periodLabel: string;
+
+    if (fromDateParam && toDateParam) {
+      startDate = fromDateParam;
+      endDate = toDateParam;
+      periodLabel = `${startDate} to ${endDate}`;
+    } else if (month) {
+      const monthDate = parseISO(`${month}-01`);
+      if (isNaN(monthDate.getTime())) {
+        return NextResponse.json({ error: 'Invalid month format' }, { status: 400 });
+      }
+      startDate = format(startOfMonth(monthDate), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(monthDate), 'yyyy-MM-dd');
+      periodLabel = format(monthDate, 'MMMM yyyy');
+    } else {
+      const now = new Date();
+      startDate = format(startOfMonth(now), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(now), 'yyyy-MM-dd');
+      periodLabel = format(now, 'MMMM yyyy');
     }
-
-    const monthDate = parseISO(`${month}-01`);
-    if (isNaN(monthDate.getTime())) {
-      return NextResponse.json({ error: 'Invalid month format' }, { status: 400 });
-    }
-
-    const monthLabel = format(monthDate, 'MMMM yyyy');
-    const startDate = format(startOfMonth(monthDate), 'yyyy-MM-dd');
-    const endDate = format(endOfMonth(monthDate), 'yyyy-MM-dd');
 
     let departmentName = 'All Departments';
 
@@ -53,7 +65,9 @@ export async function GET(request: Request) {
     });
 
     const records = employees.map((emp, index) => {
-      const leaves = emp.attendances.filter((a) => a.status === 'Absent').length;
+      const absentRecords = emp.attendances.filter((a) => a.status === 'Absent');
+      const leaves = absentRecords.length;
+      const leaveDates = absentRecords.map((a) => a.date).sort();
       const totalAttendancePermHours = emp.attendances.reduce((acc, a) => acc + (a.permissionHours || 0), 0);
       const permHours = totalAttendancePermHours > 0 ? totalAttendancePermHours : (emp.permissionHours || 0);
 
@@ -63,14 +77,18 @@ export async function GET(request: Request) {
         employeeName: emp.name,
         departmentName: emp.department?.name || 'Unassigned',
         numberOfLeaves: leaves,
+        leaveDates,
         permissionHours: permHours,
       };
     });
 
     return NextResponse.json({
       departmentName,
-      monthLabel,
-      month,
+      periodLabel,
+      monthLabel: periodLabel,
+      fromDate: startDate,
+      toDate: endDate,
+      month: month || '',
       departmentId: departmentId || 'all',
       records,
     });

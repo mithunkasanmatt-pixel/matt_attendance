@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { Download, FileText, Building2, Calendar, Table as TableIcon } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -17,13 +17,17 @@ type ReportRecord = {
   employeeName: string;
   departmentName: string;
   numberOfLeaves: number;
+  leaveDates?: string[];
   permissionHours: number;
 };
 
 type ReportData = {
   departmentName: string;
-  monthLabel: string;
-  month: string;
+  periodLabel?: string;
+  monthLabel?: string;
+  fromDate?: string;
+  toDate?: string;
+  month?: string;
   departmentId: string;
   records: ReportRecord[];
 };
@@ -31,7 +35,8 @@ type ReportData = {
 export default function ReportsPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
-  const [month, setMonth] = useState<string>(() => format(new Date(), 'yyyy-MM'));
+  const [fromDate, setFromDate] = useState<string>(() => format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [toDate, setToDate] = useState<string>(() => format(endOfMonth(new Date()), 'yyyy-MM-dd'));
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<ReportData | null>(null);
 
@@ -54,7 +59,7 @@ export default function ReportsPage() {
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/reports?departmentId=${selectedDepartment}&month=${month}`,
+        `/api/reports?departmentId=${selectedDepartment}&fromDate=${fromDate}&toDate=${toDate}`,
         { cache: 'no-store' }
       );
       const data = await res.json();
@@ -68,7 +73,7 @@ export default function ReportsPage() {
 
   const handleExportCSV = () => {
     if (!reportData) return;
-    const url = `/api/export/csv?departmentId=${selectedDepartment}&month=${month}`;
+    const url = `/api/export/csv?departmentId=${selectedDepartment}&fromDate=${fromDate}&toDate=${toDate}`;
     window.open(url, '_blank');
   };
 
@@ -86,16 +91,17 @@ export default function ReportsPage() {
     doc.setFontSize(11);
     doc.setTextColor(71, 85, 105); // Slate 600
     doc.text(`Department Name: ${reportData.departmentName}`, 14, 30);
-    doc.text(`Month: ${reportData.monthLabel}`, 14, 37);
+    doc.text(`Date Range: ${reportData.periodLabel || reportData.monthLabel || `${fromDate} to ${toDate}`}`, 14, 37);
 
     // Report Table
     autoTable(doc, {
       startY: 44,
-      head: [['Serial No.', 'Employee Name', 'Number of Leaves', 'Permission Hours']],
+      head: [['Serial No.', 'Employee Name', 'Number of Leaves', 'Leave Dates', 'Permission Hours']],
       body: reportData.records.map((r) => [
         r.sNo,
         r.employeeName,
         r.numberOfLeaves,
+        r.leaveDates && r.leaveDates.length > 0 ? r.leaveDates.join(', ') : 'None',
         `${r.permissionHours} hrs`,
       ]),
       theme: 'striped',
@@ -110,7 +116,7 @@ export default function ReportsPage() {
       },
     });
 
-    const filename = `Attendance_Report_${reportData.departmentName.replace(/[^a-zA-Z0-9]/g, '_')}_${reportData.month}.pdf`;
+    const filename = `Attendance_Report_${reportData.departmentName.replace(/[^a-zA-Z0-9]/g, '_')}_${fromDate}_to_${toDate}.pdf`;
     doc.save(filename);
   };
 
@@ -121,7 +127,7 @@ export default function ReportsPage() {
       <div className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 w-full max-w-4xl mb-8">
         <h3 className="text-lg font-semibold mb-6 text-gray-700">Generate Monthly Department Report</h3>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
               <Building2 className="w-4 h-4 mr-1.5 text-gray-500" />
@@ -144,13 +150,26 @@ export default function ReportsPage() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
               <Calendar className="w-4 h-4 mr-1.5 text-gray-500" />
-              Select Month
+              From Date
             </label>
             <input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+              <Calendar className="w-4 h-4 mr-1.5 text-gray-500" />
+              To Date
+            </label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
             />
           </div>
         </div>
@@ -179,8 +198,10 @@ export default function ReportsPage() {
                   </div>
                   <div className="h-8 w-px bg-blue-200"></div>
                   <div>
-                    <span className="text-xs text-gray-500 block">Month</span>
-                    <span className="text-base font-bold text-gray-900">{reportData.monthLabel}</span>
+                    <span className="text-xs text-gray-500 block">Date Range</span>
+                    <span className="text-base font-bold text-gray-900">
+                      {reportData.periodLabel || reportData.monthLabel}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -222,6 +243,9 @@ export default function ReportsPage() {
                     Number of Leaves
                   </th>
                   <th className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+                    Leave Dates
+                  </th>
+                  <th className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-gray-600">
                     Permission Hours
                   </th>
                 </tr>
@@ -240,6 +264,19 @@ export default function ReportsPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-800">
+                        {record.leaveDates && record.leaveDates.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {record.leaveDates.map((d) => (
+                              <span key={d} className="px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 font-medium text-xs font-mono">
+                                {d}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 font-sans text-xs">None</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-800">
                         <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                           {record.permissionHours} hrs
                         </span>
@@ -248,8 +285,8 @@ export default function ReportsPage() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4} className="px-6 py-8 text-center text-gray-500">
-                      No employees or data found for this department and month.
+                    <td colSpan={5} className="px-6 py-8 text-center text-gray-500">
+                      No employees or data found for this department and date range.
                     </td>
                   </tr>
                 )}
