@@ -8,12 +8,29 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const departmentId = searchParams.get('departmentId');
-    const month = searchParams.get('month') || format(new Date(), 'yyyy-MM');
+    const month = searchParams.get('month');
+    const fromDateParam = searchParams.get('fromDate');
+    const toDateParam = searchParams.get('toDate');
 
-    const monthDate = parseISO(`${month}-01`);
-    const monthLabel = format(monthDate, 'MMMM yyyy');
-    const startDate = format(startOfMonth(monthDate), 'yyyy-MM-dd');
-    const endDate = format(endOfMonth(monthDate), 'yyyy-MM-dd');
+    let startDate: string;
+    let endDate: string;
+    let periodLabel: string;
+
+    if (fromDateParam && toDateParam) {
+      startDate = fromDateParam;
+      endDate = toDateParam;
+      periodLabel = `${startDate} to ${endDate}`;
+    } else if (month) {
+      const monthDate = parseISO(`${month}-01`);
+      startDate = format(startOfMonth(monthDate), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(monthDate), 'yyyy-MM-dd');
+      periodLabel = format(monthDate, 'MMMM yyyy');
+    } else {
+      const now = new Date();
+      startDate = format(startOfMonth(now), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(now), 'yyyy-MM-dd');
+      periodLabel = format(now, 'MMMM yyyy');
+    }
 
     let departmentName = 'All Departments';
     const employeeWhere: any = {};
@@ -45,22 +62,26 @@ export async function GET(request: Request) {
 
     const csvLines: string[] = [];
     csvLines.push(`"Department Name","${departmentName.replace(/"/g, '""')}"`);
-    csvLines.push(`"Month","${monthLabel.replace(/"/g, '""')}"`);
+    csvLines.push(`"Date Range","${periodLabel.replace(/"/g, '""')}"`);
     csvLines.push('');
-    csvLines.push('"Serial No.","Employee Name","Number of Leaves","Permission Hours"');
+    csvLines.push('"Serial No.","Employee Name","Number of Leaves","Leave Dates","Permission Hours"');
 
     employees.forEach((emp, index) => {
-      const leaves = emp.attendances.filter((a) => a.status === 'Absent').length;
+      const absentRecords = emp.attendances.filter((a) => a.status === 'Absent');
+      const leaves = absentRecords.length;
+      const leaveDates = absentRecords.map((a) => a.date).sort().join(', ') || 'None';
       const sNo = index + 1;
       const empName = `"${emp.name.replace(/"/g, '""')}"`;
+      const leaveDatesStr = `"${leaveDates.replace(/"/g, '""')}"`;
       const totalAttendancePermHours = emp.attendances.reduce((acc, a) => acc + (a.permissionHours || 0), 0);
       const permHours = totalAttendancePermHours > 0 ? totalAttendancePermHours : (emp.permissionHours || 0);
 
-      csvLines.push(`${sNo},${empName},${leaves},${permHours}`);
+      csvLines.push(`${sNo},${empName},${leaves},${leaveDatesStr},${permHours}`);
     });
 
     const csvData = csvLines.join('\n');
-    const filename = `Attendance_Report_${departmentName.replace(/[^a-zA-Z0-9]/g, '_')}_${month}.csv`;
+    const dateSuffix = fromDateParam && toDateParam ? `${fromDateParam}_to_${toDateParam}` : month || 'report';
+    const filename = `Attendance_Report_${departmentName.replace(/[^a-zA-Z0-9]/g, '_')}_${dateSuffix}.csv`;
 
     return new NextResponse(csvData, {
       status: 200,
